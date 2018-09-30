@@ -40,20 +40,23 @@
  *   Sends data every minute to LoRaWan
  * Jan 2016, Modified by Maarten to run on ESP8266. Running on Wemos D1-mini
  * 
+ * 2018-09-30 corbo
+ *    Use BME280 Humidity, temperature and airpressure sensor
+ *    Use TTGO ESP32 1276 board with OLED display
  * 
  *------------------------------------------------------------------------------
  *
  * code (esp-rfm-LoRa.ino) modified by ursm
  * addapted to ESP32 with hardware seriel
- * Sensors used DHT22 , SDS011
+ * Sensors used BME280 , SDS011
  * LoRa used    RFM95
  * Libraries
- * DHT:   https://github.com/adafruit/DHT-sensor-library
- * LoRa:  LMIC 1.5.0 from Matthijs Kooijman   https://github.com/matthijskooijman/arduino-lmic  (commit of 20170627)
+ * BME280: library https://github.com/finitespace/BME280
+ * LoRa:   LMIC 1.5.0 from Matthijs Kooijman   https://github.com/matthijskooijman/arduino-lmic  (commit of 20170627)
  * 
  * remarks
  * RFM9x:  NSS and DIO0 are required, DIO1 is required for LoRa, DIO2 for FSK
- * DHT22:  multiple read recommended, if failed set both values to zero
+ * BME280: 
  * SDS011: 30seconds warm-up (ventilation) time (changed from 10)
  * 
  * keys for ABP have been separated
@@ -90,6 +93,7 @@
 #include <lmic.h>
 #include <hal/hal.h>
 #include <SPI.h>
+#include "BME280I2C.h"
 
 #include "Keys_prod_feinstaub_feinstaub_0001_RFM95.h"
 
@@ -136,6 +140,11 @@ static osjob_t sendjob;
 // cycle limitations).
 const unsigned TX_INTERVAL = 600;          // this is the minimal delay used between measurements  (10 minutes)
 
+// global enviromental parameters
+static float temp = 0.0;
+static float pressure = 0.0;
+static float humidity = 0.0;    
+
 // SCK, MISO, MOSI connected to their corresponding pins (9, 10, 11)  (see espressif doculentation)
 /* for ESP32
 static const uint8_t SS    = 5;
@@ -168,24 +177,8 @@ const lmic_pinmap lmic_pins = {
 #define DHT22     0                        // use DHT22
 
 
-// REMOVE DHT_U.h & .cpp from the library, otherwise you will get an error with NodeMCU
-#include "DHT.h"                         
-#define DHTPIN 21                          // what pin we're connected to 
-                                           // ESP8266 (LoLin 8 geht nicht, GPIO14=D5 OK)
-// Uncomment whatever type you're using!
-//  #define DHTTYPE DHT11                  // DHT 11 
-#define DHTTYPE DHT22                      // DHT 22  (AM2302)       only DHT22 tested!
-//  #define DHTTYPE DHT21                  // DHT 21  (AM2301)
-long cnt_fail   = 0;
-long cnt_ok     = 0;
-bool DHT_failed = false;
-int  DHT_try    = 0;
-float t;
-float h;
-int t_i;
-int h_i;
-DHT dht(DHTPIN, DHTTYPE);
-
+BME280I2C bme;                   // Default : forced mode, standby time = 1000 ms
+// Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off,
 
 
 //---------------------------------------------------------
@@ -260,41 +253,23 @@ String Float2String(const float value) {
 
 
 //-------------------------------------------------------------------------------------------------
-void sensorDHT()  {
-  // Reading temperature or humidity takes about 250 milliseconds!
-  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
-  h = dht.readHumidity();         delay(100);
-  t = dht.readTemperature();      
+void updateEnvParameters()
+{
+    delay(1000); 
+    temp = bme.temp(true);
+    pressure = bme.pres(1);    // 1 = hPa (milliBar)  
+    humidity =  bme.hum(); 
 
-  // check if returns are valid, if they are NaN (not a number) then something went wrong!
-  if (isnan(t) || isnan(h)) {
-    cnt_fail++;
-    DHT_try++;
-    DHT_failed = true;
-    DEBUG_PRT("Failed to read from DHT, fail counter: ");
-    DEBUG_PRT(cnt_fail);
-    DEBUG_PLN();
-    delay(1000);
-  } else {
-    result_DHT   = String(t) + ";" + String(h) + ";";
-    cnt_ok++;
-    DHT_failed = false;
     DEBUG_PRT("Humidity: "); 
-    DEBUG_PRT(h);
+    DEBUG_PRT(humidity);
     DEBUG_PRT(" %\t");
+    DEBUG_PRT("Pressure: "); 
+    DEBUG_PRT(pressure);
+    DEBUG_PRT(" hPa\t");
     DEBUG_PRT("Temperature: "); 
-    DEBUG_PRT(t);
+    DEBUG_PRT(temp);
     DEBUG_PRT(" *C \t ok: ");
-    DEBUG_PRT(cnt_ok);
-    if ( cnt_fail != 0 )
-    {
-      DEBUG_PRT("\t fails: ");
-      DEBUG_PRT(cnt_fail);
-    }
-    DEBUG_PLN();
-    delay(5000);
-  }
-}
+} 
 
 
 // ------------------------------------------------------------------------------------------------------------
@@ -381,8 +356,12 @@ void sensorSDS() {
 // ------------------------------------------------------------------------------------------------------------
 // Read Sensors
 void ReadSensors() {
+    int t_i;
+    int h_i;
     tosend_s = "";
-    
+
+    // BME280
+    updateEnvParameters();
 /*    // DHT
     // it seems, that DHT sometimes failes, so give it 5 tryes to read good data
     DHT_try = 0;
@@ -571,7 +550,16 @@ void setup() {
       // serialSDS.println("Starting on Serial-1 ...");  // debugging only, use a FTDIadapter at Tx (only Tx & GND connected!)
       // delay(100);
 
-    dht.begin();
+    while (1)
+    {
+        if (bme.begin()) 
+        {  
+          break;
+        }
+        DEBUG_PLN(F("No valid bme280 sensor!"));
+        // debugFlush();
+    }
+  
     delay(500);
     
     // LMIC init
