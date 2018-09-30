@@ -544,7 +544,7 @@ void setup() {
     DEBUG_PLN("Starting on USB Serial");
       delay(100);
 //    serialSDS.begin(9600);                               // 
-     serialSDS.begin(9600, SERIAL_8N1, 16, 17);
+     serialSDS.begin(9600, SERIAL_8N1, 23, 17);
     
       delay(100);
       // serialSDS.println("Starting on Serial-1 ...");  // debugging only, use a FTDIadapter at Tx (only Tx & GND connected!)
