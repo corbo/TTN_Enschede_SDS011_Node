@@ -93,7 +93,14 @@
 #include <lmic.h>
 #include <hal/hal.h>
 #include <SPI.h>
-#include "BME280I2C.h"
+
+#define BME 1                // Make define 1 on line if you have an bme280 sensor connected
+
+#if BME==1
+#include <Wire.h>
+#include "BlueDot_BME280.h"
+BlueDot_BME280 bme280; // = BlueDot_BME280();
+#endif
 
 #include "Keys_prod_feinstaub_feinstaub_0001_RFM95.h"
 
@@ -120,30 +127,31 @@ void os_getArtEui (u1_t* buf) { }
 void os_getDevEui (u1_t* buf) { }
 void os_getDevKey (u1_t* buf) { }
 
-#define OLED 1                // Make define 1 on line if you have an OLED display connected
+#define OLED 0                // Make define 1 on line if you have an OLED display connected
 
 #if OLED==1
 //U8x8 display library configuration
 //See U8g2/U8x8 documentation for available display write functions
 
 #include <U8x8lib.h>
-#endif
 
 //For Heltec Wifi LoRa 32, TTGO LoRa and TTGO LoRa32 V1 use:
 U8X8_SSD1306_128X64_NONAME_HW_I2C display(/*rst*/ 16, /*scl*/ 15, /*sda*/ 4);
-
+#endif
 
 uint8_t mydata[13];                        // should be addapted to the needed length
 static osjob_t sendjob;
 
 // Schedule TX every this many seconds (might become longer due to duty
 // cycle limitations).
-const unsigned TX_INTERVAL = 600;          // this is the minimal delay used between measurements  (10 minutes)
+const unsigned TX_INTERVAL = 60; // 600;          // this is the minimal delay used between measurements  (10 minutes)
 
 // global enviromental parameters
 static float temp = 0.0;
 static float pressure = 0.0;
 static float humidity = 0.0;    
+static float partmat10 = 0.0;    
+static float partmat25 = 0.0;    
 
 // SCK, MISO, MOSI connected to their corresponding pins (9, 10, 11)  (see espressif doculentation)
 /* for ESP32
@@ -174,11 +182,6 @@ const lmic_pinmap lmic_pins = {
 // Sensor declarations
 //--------------------------se-------------------------------
 #define SDS011    1                        // use SDS011
-#define DHT22     0                        // use DHT22
-
-
-BME280I2C bme;                   // Default : forced mode, standby time = 1000 ms
-// Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off,
 
 
 //---------------------------------------------------------
@@ -213,10 +216,11 @@ String result_SDS = "";
 String result_DHT = "";
 String tosend_s   = "";
 
+#ifdef SDS011==1
 // Serial for SDS011
 //HardwareSerial Serial1(2);
 #define serialSDS Serial2
-
+#endif
 
 
 //---------------------------------------------------------
@@ -255,10 +259,10 @@ String Float2String(const float value) {
 //-------------------------------------------------------------------------------------------------
 void updateEnvParameters()
 {
-    delay(1000); 
-    temp = bme.temp(true);
-    pressure = bme.pres(1);    // 1 = hPa (milliBar)  
-    humidity =  bme.hum(); 
+#if BME==1
+    temp = bme280.readTempC();
+    pressure = bme280.readPressure();    // 1 = hPa (milliBar)  
+    humidity =  bme280.readHumidity(); 
 
     DEBUG_PRT("Humidity: "); 
     DEBUG_PRT(humidity);
@@ -268,7 +272,8 @@ void updateEnvParameters()
     DEBUG_PRT(" hPa\t");
     DEBUG_PRT("Temperature: "); 
     DEBUG_PRT(temp);
-    DEBUG_PRT(" *C \t ok: ");
+    DEBUG_PLN(" °C");
+#endif
 } 
 
 
@@ -277,7 +282,7 @@ void updateEnvParameters()
 *  read SDS011 sensor values                                     *
 ******************************************************************/
 void sensorSDS() {
-  //  DEBUG_PLN("... 1 ...");
+  DEBUG_PLN("... 1 ...");
   char buffer;
   int value;
   int len = 0;
@@ -291,15 +296,15 @@ void sensorSDS() {
   String SDS_ID_s = "";
 
   if (! is_SDS_running) {
-    // DEBUG_PLN("... 2 ...");
+    DEBUG_PLN("... 2 ...");
     return;
   }
   
   // SDS runs: read serial buffer
   while (serialSDS.available() > 0) {
     buffer = serialSDS.read();
-//      DEBUG_PLN(String(len)+" - "+String(buffer,DEC)+" - "+String(buffer,HEX)+" - "+int(buffer)+" .");
-//      "aa" = 170, "ab" = 171, "c0" = 192
+      DEBUG_PLN(String(len)+" - "+String(buffer,DEC)+" - "+String(buffer,HEX)+" - "+int(buffer)+" .");
+     // "aa" = 170, "ab" = 171, "c0" = 192
     value = int(buffer);
     switch (len) {
       case (0): if (value != 170) { len = -1; }; break;
@@ -311,7 +316,7 @@ void sensorSDS() {
       case (6): SDS_ID = value;                checksum_is += value; break;
       case (7): SDS_ID += (value << 8);        checksum_is += value; break;
       case (8): 
-             // DEBUG_PLN("Checksum is: "+String(checksum_is % 256)+" - should: "+String(value));
+              DEBUG_PLN("Checksum is: "+String(checksum_is % 256)+" - should: "+String(value));
                 if (value == (checksum_is % 256)) { checksum_ok = 1; } else { len = -1; }; break;
       case (9): if (value != 171) { len = -1; }; break;
     }
@@ -333,6 +338,10 @@ void sensorSDS() {
     DEBUG_PLN("Sum: " + String(sds_pm10_sum) + "  Cnt: " + String(sds_val_count));
     sp1_av   = Float2String(float(sds_pm10_sum)/(sds_val_count*10.0));   sp1_av_i = int( (sds_pm10_sum)/(sds_val_count*10.0) * 10 );
     sp2_av   = Float2String(float(sds_pm25_sum)/(sds_val_count*10.0));   sp2_av_i = int( (sds_pm25_sum)/(sds_val_count*10.0) * 10 );
+
+    partmat10 = (float(sds_pm10_sum)/(sds_val_count*10.0));    
+    partmat25 = (float(sds_pm25_sum)/(sds_val_count*10.0));    
+    
     SDS_ID_s = Float2String(SDS_ID);    
     int dezPoint = SDS_ID_s.indexOf('.');
     SDS_ID_s = SDS_ID_s.substring(0, dezPoint);                          SDS_ID = int(SDS_ID);
@@ -476,7 +485,9 @@ void onEvent (ev_t ev) {
             DEBUG_PLN(F("EV_REJOIN_FAILED"));
             break;
         case EV_TXCOMPLETE:
+#if OLED==1
             display.drawString(0, 7, "EV_TXCOMPLETE  "); 
+#endif
             DEBUG_PLN(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
             if (LMIC.txrxFlags & TXRX_ACK)
               DEBUG_PLN(F("Received ack"));
@@ -550,19 +561,33 @@ void setup() {
       // serialSDS.println("Starting on Serial-1 ...");  // debugging only, use a FTDIadapter at Tx (only Tx & GND connected!)
       // delay(100);
 
-    while (1)
-    {
-        if (bme.begin()) 
-        {  
-          break;
-        }
+#if BME==1
+      bme280.parameter.communication = 0;                  //Choose communication protocol
+      bme280.parameter.I2CAddress = 0x77;                  //Choose I2C Address
+      bme280.parameter.sensorMode = 0b11;                   //Choose sensor mode
+      bme280.parameter.IIRfilter = 0b100;                    //Setup for IIR Filter
+      bme280.parameter.pressureSeaLevel = 1013.25;            //default value of 1013.25 hPa (Sensor 1)
+      bme280.parameter.tempOutsideCelsius = 15;               //default value of 15°C
+
+
+    //*********************************************************************
+    //*************ADVANCED SETUP IS OVER - LET'S CHECK THE CHIP ID!*******
+  
+    if (bme280.init() != 0x60)
+    {    
         DEBUG_PLN(F("No valid bme280 sensor!"));
         // debugFlush();
     }
+    else
+    {
+      DEBUG_PLN(F("BME280 detected!"));
+    }
+#endif
   
     delay(500);
     
-    // LMIC init
+
+   // LMIC init
     os_init();
     DEBUG_PLN("os_init done");
     
